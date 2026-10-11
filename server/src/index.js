@@ -1,6 +1,7 @@
 import http from 'http';
 import express from 'express';
 import { config } from './config.js';
+import { attachWebSocket } from './ws.js';  
 
 const app = express();
 
@@ -9,6 +10,7 @@ app.get('/health', (req, res) => {
 });
 
 const server = http.createServer(app);
+attachWebSocket(server)
 
 server.listen(config.port, () => {
   console.log(`Server listening on port ${config.port}`);
