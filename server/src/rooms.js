@@ -1,12 +1,36 @@
+import { config } from './config.js';
+
 const MAX_CLIENTS = 2;
 const rooms = new Map();
+
+function removeRoom(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+
+  clearTimeout(room.timer);
+  rooms.delete(roomId);
+}
+
+function expireRoom(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+
+  const sockets = [...room.sockets];
+  removeRoom(roomId);
+
+  for (const socket of sockets) {
+    socket.send(JSON.stringify({ type: 'room-expired' }));
+    socket.close();
+  }
+}
 
 export function createRoom(roomId, socket) {
   if (rooms.has(roomId)) {
     return { ok: false, error: 'room_exists' };
   }
 
-  rooms.set(roomId, new Set([socket]));
+  const timer = setTimeout(() => expireRoom(roomId), config.sessionMaxMs);
+  rooms.set(roomId, { sockets: new Set([socket]), timer });
   return { ok: true, count: 1 };
 }
 
@@ -17,22 +41,22 @@ export function joinRoom(roomId, socket) {
     return { ok: false, error: 'room_not_found' };
   }
 
-  if (room.size >= MAX_CLIENTS) {
+  if (room.sockets.size >= MAX_CLIENTS) {
     return { ok: false, error: 'room_full' };
   }
 
-  room.add(socket);
-  return { ok: true, count: room.size };
+  room.sockets.add(socket);
+  return { ok: true, count: room.sockets.size };
 }
 
 export function leaveRoom(roomId, socket) {
   const room = rooms.get(roomId);
   if (!room) return;
 
-  room.delete(socket);
+  room.sockets.delete(socket);
 
-  if (room.size === 0) {
-    rooms.delete(roomId);
+  if (room.sockets.size === 0) {
+    removeRoom(roomId);
   }
 }
 
@@ -40,5 +64,5 @@ export function getPeers(roomId, socket) {
   const room = rooms.get(roomId);
   if (!room) return [];
 
-  return [...room].filter((s) => s !== socket);
+  return [...room.sockets].filter((s) => s !== socket);
 }
