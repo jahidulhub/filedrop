@@ -1,16 +1,44 @@
+
 import { config } from '../config.js';
-import { getRoom, createRoom, deleteRoom } from '../rooms.js';
-import { send, sendError, detach } from '../signaling.js';
+
+import {
+  getRoom,
+  createRoom,
+  deleteRoom,
+  verifyHostToken
+} from '../rooms.js';
+
+import {
+  send,
+  sendError,
+  detach
+} from '../signaling.js';
+
+const TOKEN_PATTERN = /^[a-f0-9]{64}$/i;
 
 export function handleHost(ws, message) {
   if (ws.role) {
-    return sendError(ws, 'already-joined', 'This connection already has a room');
+    return sendError(
+      ws,
+      'already-joined',
+      'This connection already has a room'
+    );
   }
 
   const roomId = message.room;
+  const hostToken = message.hostToken;
 
-  if (typeof roomId !== 'string' || !config.idPattern.test(roomId)) {
-    return sendError(ws, 'bad-room', 'Invalid room ID');
+  if (
+    typeof roomId !== 'string' ||
+    !config.idPattern.test(roomId) ||
+    typeof hostToken !== 'string' ||
+    !TOKEN_PATTERN.test(hostToken)
+  ) {
+    return sendError(
+      ws,
+      'invalid-credentials',
+      'Invalid room credentials'
+    );
   }
 
   const now = Date.now();
@@ -20,7 +48,6 @@ export function handleHost(ws, message) {
     return sendError(ws, 'expired', 'Session expired');
   }
 
-  // Never allow a session longer than the server limit.
   if (expiresAt > now + config.sessionMs + config.clockSlackMs) {
     expiresAt = now + config.sessionMs;
   }
@@ -29,40 +56,54 @@ export function handleHost(ws, message) {
   let isReconnect = false;
 
   if (room) {
-    // The room exists but has already run out of time.
     if (room.expiresAt <= now) {
       return sendError(ws, 'expired', 'Session expired');
     }
 
-    // No host right now means the extension is coming back.
+    // Only the original host can reclaim this room.
+    if (!verifyHostToken(room, hostToken)) {
+      return sendError(
+        ws,
+        'unauthorized',
+        'Not authorized to host this room'
+      );
+    }
+
     isReconnect = room.host === null;
 
-    // Another window is hosting this room. The newest connection wins.
+    // An authorized host can replace its previous connection.
     if (room.host && room.host !== ws) {
-      sendError(room.host, 'replaced', 'Opened in another window');
+      sendError(
+        room.host,
+        'replaced',
+        'Opened in another window'
+      );
+
       detach(room.host, true);
     }
   } else {
-    room = createRoom(roomId, expiresAt);
+    room = createRoom(roomId, expiresAt, hostToken);
   }
 
   room.host = ws;
   ws.role = 'host';
   ws.roomId = roomId;
+
   clearTimeout(ws.joinTimer);
 
   console.log(
-    `[ROOM ${roomId.slice(0, 8)}] Host ${isReconnect ? 'reconnected' : 'connected'}`
+    `[ROOM ${roomId.slice(0, 8)}] Host ${
+      isReconnect ? 'reconnected' : 'connected'
+    }`
   );
 
   send(ws, {
     type: 'hosted',
     room: roomId,
     expiresAt: room.expiresAt,
-    phone: Boolean(room.guest),
+    phone: Boolean(room.guest)
   });
 
-  // A phone was already waiting in the room.
   if (room.guest) {
     send(room.guest, { type: 'host-joined' });
     send(ws, { type: 'peer-joined' });
@@ -71,23 +112,38 @@ export function handleHost(ws, message) {
 
 export function handleCloseRoom(ws) {
   if (ws.role !== 'host') {
-    return sendError(ws, 'not-host', 'Only the host can close the room');
+    return sendError(
+      ws,
+      'not-host',
+      'Only the host can close the room'
+    );
   }
 
   const roomId = ws.roomId;
   const room = getRoom(roomId);
 
-  if (room) {
-    if (room.guest) {
-      send(room.guest, { type: 'revoked' });
-      detach(room.guest);
-    }
-    deleteRoom(roomId);
+  // Reject stale host connections.
+  if (!room || room.host !== ws) {
+    return sendError(
+      ws,
+      'unauthorized',
+      'Not authorized to close this room'
+    );
   }
 
-  console.log(`[ROOM ${roomId.slice(0, 8)}] Closed by host`);
+  if (room.guest) {
+    send(room.guest, { type: 'revoked' });
+    detach(room.guest);
+  }
+
+  deleteRoom(roomId);
+
+  console.log(
+    `[ROOM ${roomId.slice(0, 8)}] Closed by host`
+  );
 
   ws.role = null;
   ws.roomId = null;
+
   send(ws, { type: 'room-closed' });
 }

@@ -1,28 +1,69 @@
+
 import 'dotenv/config';
 
-export const config = {
-  port: Number(process.env.PORT) || 3000,
+function readInteger(name, defaultValue, min, max) {
+  const raw = process.env[name];
 
-  // Maximum session length. Default is 3 hours.
-  sessionMs: (Number(process.env.SESSION_MAX_MINUTES) || 180) * 60 * 1000,
+  if (raw === undefined || raw === '') {
+    return defaultValue;
+  }
 
-  // Allowed difference between the host's clock and the server's clock.
+  const value = Number(raw);
+
+  if (
+    !Number.isSafeInteger(value) ||
+    value < min ||
+    value > max
+  ) {
+    throw new Error(
+      `Invalid ${name}: expected an integer between ${min} and ${max}`
+    );
+  }
+
+  return value;
+}
+
+const port = readInteger('PORT', 3000, 1, 65535);
+
+const sessionMinutes = readInteger(
+  'SESSION_MAX_MINUTES',
+  180,
+  1,
+  1440
+);
+
+export const config = Object.freeze({
+  port,
+
+  // Maximum session length.
+  sessionMs: sessionMinutes * 60 * 1000,
+
+  // Allowed difference between client and server clocks.
   clockSlackMs: 60 * 1000,
 
-  // How often to ping clients and drop dead connections.
+  // WebSocket heartbeat interval.
   heartbeatMs: 15 * 1000,
 
-  // How often to check for expired rooms.
+  // Expired-room cleanup interval.
   sweepMs: 30 * 1000,
 
-  // A new connection must identify itself within this time.
+  // Time allowed to identify a new connection.
   joinTimeoutMs: 10 * 1000,
 
-  // Largest message the server accepts.
+  // Maximum incoming WebSocket message size.
   maxPayloadBytes: 64 * 1024,
 
-  // Room IDs and device IDs must be standard UUIDs,
-  // for example the output of crypto.randomUUID().
+  // UUID format for room and device identifiers.
   idPattern:
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-};
+  
+  
+  allowedOrigins: (
+    process.env.ALLOWED_ORIGINS ||
+    'http://localhost:3000'
+  )
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean),
+
+});
